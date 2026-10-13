@@ -35,7 +35,13 @@ from bosshunter import __version__
 from bosshunter.ai.credentials import AIRequestError, get_ai_api_key, list_ai_models
 from bosshunter.ai.scorer import sanitize_score_trace
 from bosshunter.cities import CityRefreshError, get_city_map, load_city_snapshot, refresh_city_cache
-from bosshunter.config import AI_SERVICE_PRESETS, load_config, remove_retired_collection_settings, save_config
+from bosshunter.config import (
+	AI_SERVICE_PRESETS,
+	load_config,
+	remove_retired_collection_settings,
+	save_config,
+	validate_config_send_windows,
+)
 from bosshunter.db import (
 	GREETING_ALLOWED_STATUSES,
 	REJECT_ALLOWED_STATUSES,
@@ -84,7 +90,7 @@ from bosshunter.collection_run_store import (
 	list_collection_runs,
 	mark_orphaned_collection_runs_stopped,
 )
-from bosshunter.job_filters import city_base_name, city_match_clause, parse_monthly_salary_k
+from bosshunter.job_filters import city_base_name, city_match_clause, matching_blocked_company, parse_monthly_salary_k
 from bosshunter.job_export import InvalidJobSelectionError, export_jobs, export_row_count
 from bosshunter.scoring_run_store import (
 	create_scoring_run,
@@ -1257,16 +1263,26 @@ def api_job_search():
 	}
 	query += f" ORDER BY {sort_expressions[sort_by]} {sort_order.upper()}, created_at DESC, score DESC"
 
+	config = load_config(CONFIG_PATH)
+	blocked_companies = config.get("profile", {}).get("blocked_companies", [])
 	db = _get_web_db()
 	try:
-		all_total = db.execute("SELECT COUNT(*) FROM jobs WHERE deleted_at IS NULL").fetchone()[0]
 		city_options = sorted({
 			city_base_name(row[0]) for row in db.execute(
 				"SELECT DISTINCT city FROM jobs"
 				" WHERE deleted_at IS NULL AND TRIM(COALESCE(city, '')) <> ''"
 			).fetchall()
 		})
+		if blocked_companies:
+			all_total = sum(
+				matching_blocked_company(row["company"], blocked_companies) is None
+				for row in db.execute("SELECT company FROM jobs WHERE deleted_at IS NULL")
+			)
+		else:
+			all_total = db.execute("SELECT COUNT(*) FROM jobs WHERE deleted_at IS NULL").fetchone()[0]
 		rows = [dict(row) for row in db.execute(query, params).fetchall()]
+		if blocked_companies:
+			rows = [row for row in rows if matching_blocked_company(row.get("company", ""), blocked_companies) is None]
 		if salary_min is not None or salary_max is not None:
 			filtered_rows = []
 			for row in rows:
@@ -1281,7 +1297,6 @@ def api_job_search():
 				filtered_rows.append(row)
 			rows = filtered_rows
 		total = len(rows)
-		config = load_config(CONFIG_PATH)
 		return _json_response({
 			"items": [_serialize_job(row, config=config) for row in rows[offset:offset + limit]],
 			"total": total,
@@ -2552,6 +2567,10 @@ def api_config_post():
 		if not isinstance(data, dict):
 			return _json_response({"error": "Config body must be an object"}, 400)
 		data = _sanitize_config_for_write(data)
+		try:
+			validate_config_send_windows(data)
+		except ValueError as exc:
+			return _json_response({"error": str(exc)}, 400)
 
 		# Basic validation
 		profile = data.get("profile", {})
