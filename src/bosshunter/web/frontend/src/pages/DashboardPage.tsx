@@ -14,6 +14,7 @@ import { PipelineFlow } from '@/components/dashboard/PipelineFlow'
 import { RecentActivity } from '@/components/dashboard/RecentActivity'
 import type { ActivityData, TopCompany } from '@/hooks/useDashboard'
 import { JobFilterBar } from '@/components/jobs/JobFilterBar'
+import { InterviewPreparation } from '@/components/jobs/InterviewPreparation'
 import { parseHistoryDetail } from '@/lib/historyDetail'
 import { PLATFORM_LABELS } from '@/lib/platforms'
 import {
@@ -200,6 +201,8 @@ const taskMetricItems = [
   { key: 'collect_filtered', label: '过滤' },
   { key: 'collect_parse_failed', label: '解析失败' },
   { key: 'collect_save_failed', label: '保存失败' },
+  { key: 'ai_completed', label: 'AI已完成' },
+  { key: 'ai_total', label: 'AI总数' },
   { key: 'ai_passed', label: 'AI通过' },
   { key: 'ai_filtered', label: 'AI过滤' },
   { key: 'ai_failed', label: 'AI失败' },
@@ -519,6 +522,15 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   const activeTask = workbench.task
   const visibleTask = activeTask || workbench.last_task
   const visibleTaskError = visibleTask?.error ? taskErrorFeedback(visibleTask.error) : null
+  const fullStage = visibleTask ? currentTaskStage(visibleTask) : ''
+  const hasStageDetails = fullStage.trim().includes('\n')
+  const detailMetrics = taskMetricItems.filter(item => {
+    const metrics = visibleTask?.metrics || {}
+    if (!(item.key in metrics)) return false
+    if (item.key.startsWith('collect_') && visibleTask?.progress?.platforms) return false
+    if (['collect_seen', 'collect_new', 'ai_passed', 'send_success', 'greet_generated'].includes(item.key)) return false
+    return !(item.key.endsWith('_failed') && Number(metrics[item.key]) > 0)
+  })
   const greetTaskRunning = activeTask != null && activeTask.mode === 'greet'
     && (activeTask.status === 'running' || activeTask.status === 'stopping')
 
@@ -952,28 +964,31 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                 <p className="min-w-0 flex-[1_1_12rem] truncate leading-5 text-foreground" title={currentTaskStage(visibleTask)}>{currentTaskStage(visibleTask).split('\n')[0]}</p>
                 {visibleTask.metrics && (
                   <div className="flex max-w-full flex-wrap items-center gap-x-4 gap-y-1" aria-label="任务关键统计">
-                    {taskMetricItems.filter(item => ['collect_seen', 'collect_new', 'ai_passed', 'send_success', 'greet_generated'].includes(item.key) && item.key in visibleTask.metrics!).map(item => (
+                    {taskMetricItems.filter(item => ['ai_passed', 'send_success', 'greet_generated'].includes(item.key) && item.key in visibleTask.metrics!).map(item => (
                       <span key={item.key} className="whitespace-nowrap text-muted">{item.label} <strong className="font-semibold tabular-nums text-foreground">{visibleTask.metrics?.[item.key]}</strong></span>
                     ))}
-                    {taskMetricItems.filter(item => item.key.endsWith('_failed') && Number(visibleTask.metrics?.[item.key]) > 0).map(item => (
+                    {taskMetricItems.filter(item => !item.key.startsWith('collect_') && item.key.endsWith('_failed') && Number(visibleTask.metrics?.[item.key]) > 0).map(item => (
                       <span key={item.key} className="whitespace-nowrap text-danger">{item.label} {visibleTask.metrics?.[item.key]}</span>
                     ))}
                   </div>
                 )}
                 {visibleTask.deadline_at && <span className="text-muted">截止 {new Date(visibleTask.deadline_at).toLocaleString('zh-CN', { hour12: false })}</span>}
               </div>
-              <details className="group mt-2 border-t border-card-border/60 pt-2 text-xs">
-                <summary className="flex w-fit cursor-pointer list-none items-center gap-1 text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
-                  <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />任务详情
-                </summary>
-                <p className="mt-2 whitespace-pre-line break-words leading-5 text-muted">{currentTaskStage(visibleTask)}</p>
-                <p className="mt-2 leading-5 text-muted">浏览器无反应时，请检查 BOSS 登录状态和 Chrome 连接。</p>
-                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2" aria-label="任务详细统计">
-                  {taskMetricItems.filter(item => item.key in (visibleTask.metrics || {})).map(item => (
-                    <span key={item.key} className="text-muted">{item.label} <strong className="font-medium tabular-nums text-foreground">{visibleTask.metrics?.[item.key] ?? 0}</strong></span>
-                  ))}
-                </div>
-              </details>
+              {(hasStageDetails || detailMetrics.length > 0) && (
+                <details className="group mt-2 border-t border-card-border/60 pt-2 text-xs">
+                  <summary className="flex w-fit cursor-pointer list-none items-center gap-1 text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
+                    <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />任务详情
+                  </summary>
+                  {hasStageDetails && <p className="mt-2 whitespace-pre-line break-words leading-5 text-muted">{fullStage}</p>}
+                  {detailMetrics.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2" aria-label="任务详细统计">
+                      {detailMetrics.map(item => (
+                        <span key={item.key} className="text-muted">{item.label} <strong className="font-medium tabular-nums text-foreground">{visibleTask.metrics?.[item.key]}</strong></span>
+                      ))}
+                    </div>
+                  )}
+                </details>
+              )}
               {Boolean(visibleTask.metrics?.greet_paused) && (
                 <div className="mt-2 rounded-xl border border-warning-border bg-warning-soft px-3 py-2 text-xs font-bold leading-5 text-warning-strong">
                   提前暂停原因：{greetPauseReasonLabel(visibleTask.metrics?.greet_pause_reason) || 'AI 服务异常'}。已生成内容已保存，剩余岗位下次运行会继续处理。
@@ -1292,7 +1307,7 @@ function CollectionProgressPanel({ progress }: { progress: CollectionProgress })
         <span className="flex items-center gap-1.5 font-semibold"><ChevronDown className="h-3.5 w-3.5 text-muted transition-transform group-open:rotate-180" />采集详情</span>
         <span className="text-muted">{outcome}</span>
         {platforms.map(([platform, state]) => (
-          <span key={platform} className="text-muted">{PLATFORM_LABELS[platform] || platform} · 新增 {state.new}
+          <span key={platform} className="text-muted">{PLATFORM_LABELS[platform] || platform} · 新增 {state.new || 0} 条
             {collectionReasonLabel(`${state.reason_code || ''} ${state.message || ''}`) && <span className="ml-2 text-warning">{collectionReasonLabel(`${state.reason_code || ''} ${state.message || ''}`)}</span>}
           </span>
         ))}
@@ -1305,7 +1320,44 @@ function CollectionProgressPanel({ progress }: { progress: CollectionProgress })
               <span className="text-muted">{state.status === 'queued' ? '等待前序平台完成' : `${state.city || '城市未开始'} · ${state.keyword || '关键词未开始'} · 第 ${state.page || 0}/${state.max_pages || 0} 页`}</span>
             </div>
             <p className="text-muted">扫描 {state.seen || 0} · 新增 {state.new} · 重复 {state.duplicate || 0} · 过滤 {state.filtered || 0} · 解析失败 {state.parse_failed || 0} · 保存失败 {state.save_failed || 0}</p>
-            {(state.message || state.reason_code) && <p className="mt-1 break-words text-muted">{state.message || state.reason_code}</p>}
+            {Number(state.filtered) > 0 && (
+              <details className="mt-2 rounded-lg border border-card-border bg-secondary/40 p-2" open>
+                <summary className="cursor-pointer font-medium">过滤记录 · {state.filtered} 条</summary>
+                <p className="mt-1 text-xs text-muted">每个平台保留本次采集最近 200 条记录；过滤岗位未进入岗位池。</p>
+                {state.filter_records?.length ? (
+                  <>
+                    <p className="text-xs text-muted">已保留 {state.filter_records.length} 条{state.filter_records.length < Number(state.filtered) ? '，其余记录未保留或来自旧版采集' : ''}</p>
+                    <ol tabIndex={0} aria-label={`${PLATFORM_LABELS[platform] || platform}过滤记录`} className="mt-2 max-h-60 space-y-2 overflow-y-auto overscroll-contain pr-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary">
+                      {state.filter_records.map((record, index) => (
+                        <li key={`${record.source_job_id}-${index}`} className="rounded-md bg-card p-2">
+                          <p className="break-words font-medium">{record.title || '职位名称未提供'} · {record.company || '公司名称未提供'}</p>
+                          <p className="break-words text-muted">{record.reason}</p>
+                        </li>
+                      ))}
+                    </ol>
+                  </>
+                ) : <p className="mt-2 text-muted">本次采集未保存过滤明细，旧记录无法补回；新版本启动的采集会记录原因。</p>}
+              </details>
+            )}
+            {(Number(state.parse_failed || 0) + Number(state.save_failed || 0)) > 0 && (
+              <details open className="mt-2 rounded-lg border border-danger-border bg-danger-soft p-2">
+                <summary className="cursor-pointer font-medium text-danger">采集异常记录 · {(state.parse_failed || 0) + (state.save_failed || 0)} 次</summary>
+                <p className="mt-1 text-xs text-muted">每个平台保留本次采集最近 200 条异常；已保留 {state.error_records?.length || 0} 条。</p>
+                {state.error_records?.length ? (
+                  <ol tabIndex={0} aria-label={`${PLATFORM_LABELS[platform] || platform}采集异常记录`} className="mt-2 max-h-60 space-y-2 overflow-y-auto overscroll-contain pr-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary">
+                    {state.error_records.map((record, index) => (
+                      <li key={index} className="rounded-md bg-card p-2">
+                        <p className="font-medium text-danger">{record.kind === 'save' ? '保存失败' : '解析失败'}</p>
+                        {record.title && <p className="break-words">{record.title}{record.company ? ` · ${record.company}` : ''}</p>}
+                        <p className="break-words text-muted">{[record.city, record.keyword, record.page ? `第 ${record.page} 页` : ''].filter(Boolean).join(' · ') || '未取得页面上下文'}</p>
+                        <p className="break-words">{record.reason}</p>
+                      </li>
+                    ))}
+                  </ol>
+                ) : <p className="mt-2 text-muted">本次采集未保存异常明细，旧记录无法补回。</p>}
+              </details>
+            )}
+            {(state.message || state.reason_code) && !state.filter_records?.some(record => record.reason === state.message) && !state.error_records?.some(record => record.reason === state.message) && <p className="mt-1 break-words text-muted">{state.message?.replace(/；本轮新增 \d+ 条，读取 \d+ 条，重复 \d+ 条，过滤 \d+ 条，解析失败 \d+ 条，保存失败 \d+ 条$/, '') || state.reason_code}</p>}
           </div>
         ))}
       </div>
@@ -1599,6 +1651,7 @@ function JobDetailModal({ job, onClose, onChanged }: { job: Job; onClose: () => 
           </div>
           <Button variant="secondary" size="sm" onClick={onClose}>关闭</Button>
         </div>
+        <InterviewPreparation key={job.id} job={job} />
         <div className="grid gap-3 text-sm lg:grid-cols-2">
           <InfoBlock label="HR" value={[job.hr_name, job.hr_title].filter(Boolean).join(' · ') || '-'} />
           <InfoBlock label="招聘者活跃" value={job.hr_active || '活跃度未知'} />
@@ -1669,6 +1722,9 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
   const [filters, setFilters] = useState<JobFilters>({ ...EMPTY_JOB_FILTERS })
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [notice, setNotice] = useState('')
+  const [blockedCompanies, setBlockedCompanies] = useState<string[]>([])
+  const [blockingJobId, setBlockingJobId] = useState<string | null>(null)
+  const blockingCompanyRef = useRef(false)
   const [showRecycleBin, setShowRecycleBin] = useState(false)
   const [showScoreDialog, setShowScoreDialog] = useState(false)
   const [quickScoring, setQuickScoring] = useState(false)
@@ -1684,6 +1740,33 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
   const deliveryTask = deliveryWorkbench.task?.mode === 'deliver'
     ? deliveryWorkbench.task
     : deliveryWorkbench.last_task?.mode === 'deliver' ? deliveryWorkbench.last_task : null
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const loadBlockedCompanies = () => {
+      fetch('/api/agent/state', { cache: 'no-store', signal: controller.signal })
+        .then(async res => {
+          if (!res.ok) return
+          const data = await res.json()
+          if (!controller.signal.aborted && Array.isArray(data.preferences?.blocked_companies)) {
+            setBlockedCompanies(data.preferences.blocked_companies)
+          }
+        })
+        .catch(() => { /* 点击屏蔽时会重新读取，并显示读取错误。 */ })
+    }
+    loadBlockedCompanies()
+    const handleConfigSaved = () => {
+      loadBlockedCompanies()
+      setSelectedIds([])
+      setPage(0)
+      refreshJobs()
+    }
+    window.addEventListener('bosshunter-config-saved', handleConfigSaved)
+    return () => {
+      controller.abort()
+      window.removeEventListener('bosshunter-config-saved', handleConfigSaved)
+    }
+  }, [refreshJobs])
 
   useEffect(() => {
     setPage(0)
@@ -1767,6 +1850,56 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
       setNotice(`已移入回收站 ${result.affected_count || 0} 条岗位。`)
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : '移入回收站失败')
+    }
+  }
+
+  const blockCompany = async (job: Job) => {
+    const company = (job.company || '').trim()
+    if (!company || blockingCompanyRef.current) return
+    blockingCompanyRef.current = true
+    setBlockingJobId(job.id)
+    setNotice('正在读取屏蔽名单并准备配置预览…')
+    try {
+      const readRules = async (): Promise<string[]> => {
+        const res = await fetch('/api/agent/state', { cache: 'no-store' })
+        const data = await res.json()
+        const rules = data.preferences?.blocked_companies
+        if (!res.ok || !Array.isArray(rules) || !rules.every(rule => typeof rule === 'string')) {
+          throw new Error(data.error || '读取屏蔽名单失败，请重试。')
+        }
+        return rules
+      }
+      const current = await readRules()
+      setBlockedCompanies(current)
+      const existing = current.find(rule => rule.trim() && company.toLowerCase().includes(rule.trim().toLowerCase()))
+      if (existing) {
+        setSelectedIds([])
+        setPage(0)
+        refreshJobs()
+        setNotice(`“${company}”已被“${existing}”屏蔽。可在配置 → 个人信息 → 屏蔽公司中解除。`)
+        return
+      }
+      const preferences = { blocked_companies: [...current, company] }
+      await postJobAction('/api/agent/config/preview', { preferences })
+      if (!window.confirm(`配置预览\n新增屏蔽公司：${company}\n已有屏蔽规则：${current.join('、') || '无'}\n\n保存后，公司名包含“${company}”的岗位将从列表隐藏，并跳过后续采集和评分。岗位记录和投递状态保留。\n可在“配置 → 个人信息 → 屏蔽公司”中解除，解除后恢复显示。\n\n确认保存？`)) {
+        setNotice('已取消屏蔽，配置未修改。')
+        return
+      }
+      // 确认期间可能在其他页面修改了名单，避免用旧预览覆盖新规则。
+      const latest = await readRules()
+      if (JSON.stringify(latest) !== JSON.stringify(current)) {
+        setBlockedCompanies(latest)
+        throw new Error('屏蔽名单已变化，请重新点击“屏蔽公司”查看最新预览。')
+      }
+      const result = await postJobAction('/api/agent/config/apply', { preferences, confirm: true })
+      setBlockedCompanies(result.preferences.blocked_companies)
+      window.dispatchEvent(new Event('bosshunter-config-saved'))
+      setNotice(`已屏蔽“${company}”，匹配岗位已从列表隐藏，记录保留；解除屏蔽后恢复显示。`)
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : '屏蔽公司失败，请重试。')
+    } finally {
+      blockingCompanyRef.current = false
+      setBlockingJobId(null)
     }
   }
 
@@ -2042,6 +2175,9 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
         onSoftDelete={job => void softDelete([job.id])}
         onMarkManuallySent={job => void markManuallySent(job)}
         onStatusChange={changeJobStatus}
+        onBlockCompany={job => void blockCompany(job)}
+        blockedCompanies={blockedCompanies}
+        blockingJobId={blockingJobId}
         loading={loading}
         sortBy={sortBy}
         sortOrder={sortOrder}
