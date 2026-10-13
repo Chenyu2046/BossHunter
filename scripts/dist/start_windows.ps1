@@ -58,11 +58,8 @@ if (-not $SkipChrome) {
 	}
 	if (-not $ChromeRunning) {
 		Write-Host "Starting the BossHunter Chrome profile..."
-		Start-Process -FilePath $Chrome -ArgumentList @(
-			"--remote-debugging-port=9222",
-			"--user-data-dir=$ChromeProfile",
-			"https://www.zhipin.com"
-		)
+		$ChromeArgs = "--remote-debugging-port=9222 --user-data-dir=`"$ChromeProfile`" https://www.zhipin.com"
+		Start-Process -FilePath $Chrome -ArgumentList $ChromeArgs
 		$ChromeReady = $false
 		for ($i = 0; $i -lt 20; $i++) {
 			Start-Sleep -Milliseconds 500
@@ -80,7 +77,16 @@ if (-not $SkipChrome) {
 	}
 }
 
-if (-not (Test-NetConnection -ComputerName 127.0.0.1 -Port 8686 -InformationLevel Quiet -WarningAction SilentlyContinue)) {
+function Test-WorkbenchReady {
+	try {
+		$response = Invoke-RestMethod -Uri "http://127.0.0.1:8686/api/health" -TimeoutSec 2 -ErrorAction Stop
+		return ($response.status -eq "ok")
+	} catch {
+		return $false
+	}
+}
+
+if (-not (Test-WorkbenchReady)) {
 	Write-Host "Starting the local workbench..."
 	$WebArguments = @("-m", "bosshunter.main", "web", "--no-open")
 	Start-Process -FilePath $PythonExe -ArgumentList $WebArguments -WorkingDirectory $DistRoot -WindowStyle Hidden
@@ -88,12 +94,9 @@ if (-not (Test-NetConnection -ComputerName 127.0.0.1 -Port 8686 -InformationLeve
 	$WebReady = $false
 	for ($i = 0; $i -lt 30; $i++) {
 		Start-Sleep -Milliseconds 500
-		try {
-			$null = Invoke-WebRequest -Uri "http://127.0.0.1:8686/" -UseBasicParsing -TimeoutSec 2
+		if (Test-WorkbenchReady) {
 			$WebReady = $true
 			break
-		} catch {
-			# The local server is still starting.
 		}
 	}
 	if (-not $WebReady) {
@@ -104,11 +107,8 @@ if (-not (Test-NetConnection -ComputerName 127.0.0.1 -Port 8686 -InformationLeve
 }
 
 if (-not $SkipChrome) {
-	Start-Process -FilePath $Chrome -ArgumentList @(
-		"--remote-debugging-port=9222",
-		"--user-data-dir=$ChromeProfile",
-		"http://127.0.0.1:8686"
-	)
+	$ChromeArgs = "--remote-debugging-port=9222 --user-data-dir=`"$ChromeProfile`" http://127.0.0.1:8686"
+	Start-Process -FilePath $Chrome -ArgumentList $ChromeArgs
 }
 
 Write-Host "BossHunter is ready. Log in manually in the dedicated Chrome window if needed."

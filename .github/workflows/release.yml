@@ -3,6 +3,12 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "scripts/dist/**"
+      - "pyproject.toml"
+      - "src/bosshunter/web/frontend/**"
 
 permissions:
   contents: write
@@ -67,21 +73,22 @@ jobs:
           for ($i = 0; $i -lt 30; $i++) {
             Start-Sleep -Milliseconds 500
             try {
-              $null = Invoke-WebRequest -Uri "http://127.0.0.1:8799/" -UseBasicParsing -TimeoutSec 2
-              $Ready = $true
-              break
+              $health = Invoke-RestMethod -Uri "http://127.0.0.1:8799/api/health" -TimeoutSec 2 -ErrorAction Stop
+              if ($health.status -eq "ok") { $Ready = $true; break }
             } catch { }
           }
-          if (-not $Ready) { throw "portable package web server did not start" }
+          if (-not $Ready) { throw "portable package web server did not start or health check failed" }
           Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" | Where-Object { $_.CommandLine -like '*8799*' -or ($_.CommandLine -like '*bosshunter.main*web*' -and $_.ExecutablePath -like '*pkg*') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 
       - name: Package zip
+        if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         run: |
           $Version = "${{ github.ref_name }}"
           Compress-Archive -Path pkg/* -DestinationPath "BossHunter-$Version-windows-x64.zip"
 
       - name: Upload release asset
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: BossHunter-*-windows-x64.zip
@@ -139,13 +146,27 @@ jobs:
         run: |
           "./pkg/python/bin/python3" -m bosshunter.main --version
           "./pkg/python/bin/python3" -c "import bosshunter; print('import OK')"
+          "./pkg/python/bin/python3" -m bosshunter.main web --no-open --port 8799 &
+          WEB_PID=$!
+          READY=0
+          for _ in $(seq 1 30); do
+            sleep 0.5
+            if curl -sf --max-time 2 "http://127.0.0.1:8799/api/health" 2>/dev/null | grep -q '"status": *"ok"'; then
+              READY=1
+              break
+            fi
+          done
+          kill $WEB_PID 2>/dev/null || true
+          if [ "$READY" -eq 0 ]; then echo "portable package web server did not start or health check failed"; exit 1; fi
 
       - name: Package tar.gz
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           VERSION="${{ github.ref_name }}"
           tar -czf "BossHunter-$VERSION-macos-${{ matrix.arch }}.tar.gz" -C pkg .
 
       - name: Upload release asset
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: BossHunter-*-macos-*.tar.gz

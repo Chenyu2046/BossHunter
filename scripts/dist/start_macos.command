@@ -68,13 +68,20 @@ if [ "$SKIP_CHROME" -eq 0 ]; then
     fi
 fi
 
-if ! curl -s --max-time 2 "http://127.0.0.1:8686/" >/dev/null 2>&1; then
+check_workbench_ready() {
+    local response
+    response=$(curl -sf --max-time 2 "http://127.0.0.1:8686/api/health" 2>/dev/null) || return 1
+    echo "$response" | grep -q '"status": *"ok"' || return 1
+    return 0
+}
+
+if ! check_workbench_ready; then
     echo "Starting the local workbench..."
     nohup "$PYTHON_EXE" -m bosshunter.main web --no-open >/dev/null 2>&1 &
     WEB_READY=0
     for _ in $(seq 1 30); do
         sleep 0.5
-        if curl -s --max-time 2 "http://127.0.0.1:8686/" >/dev/null 2>&1; then
+        if check_workbench_ready; then
             WEB_READY=1
             break
         fi
