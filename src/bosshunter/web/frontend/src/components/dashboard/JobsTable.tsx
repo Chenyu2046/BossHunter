@@ -2,11 +2,12 @@ import { Fragment, useEffect, useState } from 'react'
 import { OutsourcingBadge } from '@/components/jobs/OutsourcingBadge'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { CheckCircle2, ChevronDown, ChevronUp, ExternalLink, Trash2 } from 'lucide-react'
+import { Ban, CheckCircle2, ChevronDown, ChevronUp, ExternalLink, Trash2 } from 'lucide-react'
 import { getStatusLabel } from '@/lib/status'
 import { PLATFORM_SHORT_LABELS } from '@/lib/platforms'
 import type { Job } from '@/hooks/useDashboard'
 import type { JobSortKey, JobSortOrder } from '@/hooks/useJobSearch'
+import { InterviewPreparation } from '@/components/jobs/InterviewPreparation'
 
 interface JobsTableProps {
   jobs: Job[]
@@ -19,6 +20,9 @@ interface JobsTableProps {
   onSoftDelete?: (job: Job) => void
   onMarkManuallySent?: (job: Job) => void
   onStatusChange?: (job: Job, status: string) => void
+  onBlockCompany?: (job: Job) => void
+  blockedCompanies?: string[]
+  blockingJobId?: string | null
   loading?: boolean
   sortBy: JobSortKey
   sortOrder: JobSortOrder
@@ -66,11 +70,11 @@ function statusVariant(status: string) {
   return variants.has(status) ? status : 'default'
 }
 
-export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedIds, onToggleSelected, onSoftDelete, onMarkManuallySent, onStatusChange, loading = false, sortBy, sortOrder, onSortChange }: JobsTableProps) {
+export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedIds, onToggleSelected, onSoftDelete, onMarkManuallySent, onStatusChange, onBlockCompany, blockedCompanies = [], blockingJobId = null, loading = false, sortBy, sortOrder, onSortChange }: JobsTableProps) {
   const [expanded, setExpanded] = useState<string | null>(null)
   const [pageInput, setPageInput] = useState(String(page + 1))
   const totalPages = Math.ceil(total / pageSize)
-  const hasActions = Boolean(onSoftDelete || onMarkManuallySent || onStatusChange)
+  const hasActions = Boolean(onSoftDelete || onMarkManuallySent || onStatusChange || onBlockCompany)
 
   useEffect(() => {
     setPageInput(String(page + 1))
@@ -146,6 +150,8 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                 const isExternalPlatform = job.source_platform === 'zhilian' || job.source_platform === '51job' || job.source_platform === 'liepin'
                 const jobUrl = safeJobUrl(job)
                 const alreadySent = ['sent', 'replied', 'resume_sent', 'needs_resume', 'follow_up_sent'].includes(job.status)
+                const company = (job.company || '').trim()
+                const blockedRule = blockedCompanies.find(rule => rule.trim() && company.toLowerCase().includes(rule.trim().toLowerCase()))
                 return (
                   <Fragment key={job.id}>
                     <tr
@@ -226,6 +232,18 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                                 <Trash2 className="h-4 w-4" />
                               </button>
                             )}
+                            {onBlockCompany && (
+                              <button
+                                type="button"
+                                disabled={!company || Boolean(blockedRule) || Boolean(blockingJobId)}
+                                onClick={() => onBlockCompany(job)}
+                                aria-label={`屏蔽公司 ${company || '公司名缺失'}`}
+                                title={blockedRule ? `已被“${blockedRule}”屏蔽，可在配置中解除` : company ? '预览后将公司加入屏蔽名单' : '缺少公司名称，无法屏蔽'}
+                                className="inline-flex items-center gap-1 rounded-lg border border-card-border px-2 py-1.5 text-[11px] font-bold text-muted hover:bg-danger-soft hover:text-danger disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                <Ban className="h-3.5 w-3.5" />{blockingJobId === job.id ? '处理中…' : blockedRule ? '已屏蔽' : '屏蔽公司'}
+                              </button>
+                            )}
                             {onStatusChange && !alreadySent && (
                               <select
                                 defaultValue=""
@@ -251,6 +269,9 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                     {isExpanded && (
                       <tr className="border-b border-card-border bg-surface">
                         <td colSpan={hasActions ? 11 : 10} className="px-6 py-4">
+                          <div className="max-w-2xl w-[calc(100vw-9rem)] md:w-[calc(100vw-22rem)]">
+                            <InterviewPreparation key={job.id} job={job} />
+                          </div>
                           <div className="grid grid-cols-1 gap-4 text-sm lg:grid-cols-3">
                             <div className="rounded-2xl border border-card-border bg-card p-4">
                               <p className="mb-2 text-xs font-black text-primary">JD摘要</p>
