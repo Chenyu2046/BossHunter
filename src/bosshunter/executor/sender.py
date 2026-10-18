@@ -1,34 +1,50 @@
 """Sender module - Auto-send greetings with throttle control."""
 
-import time
-from bosshunter.employment import internship_rejection
-from contextlib import nullcontext
 import json
+import time
+from collections import Counter
+from contextlib import nullcontext
 from threading import Event
-from pathlib import Path
 from urllib.parse import urljoin
+
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
 from bosshunter.browser import (
-    new_tab,
+    click_at,
     close_tab,
     evaluate,
-    click_at,
     get_page_targets,
     navigate,
+    new_tab,
     press_key,
     type_text,
     wait_for_load,
 )
-from bosshunter.db import (
-    get_db, get_jobs_ready_to_send, update_job_status, update_job_last_error,
-    add_history, add_risk_event, set_platform_safety_lock,
-)
 from bosshunter.collection.capabilities import platform_supports
-from bosshunter.executor.resume_images import attach_resume_images, resume_image_settings
-from bosshunter.throttle import RequestThrottle, SendWindowChecker, ProgressiveBackoff, should_take_day_off
+from bosshunter.db import (
+    add_history,
+    add_risk_event,
+    get_db,
+    get_jobs_ready_to_send,
+    set_platform_safety_lock,
+    update_job_last_error,
+    update_job_status,
+)
+from bosshunter.employment import internship_rejection
+from bosshunter.executor.resume_images import (
+    attach_resume_images,
+    capture_conversation_images,
+    resume_image_fingerprints,
+    resume_image_settings,
+)
 from bosshunter.platform_safety import PlatformAccessGuard, PlatformSafetyStop
+from bosshunter.throttle import (
+    ProgressiveBackoff,
+    RequestThrottle,
+    SendWindowChecker,
+    should_take_day_off,
+)
 
 console = Console()
 
@@ -195,9 +211,27 @@ def _make_resume_image_attacher(config: dict, db, workbench_log=None):
 
     def attach(target_id: str, job: dict, greeting: str, stop_event) -> dict:
         job_id = str(job.get("id") or "")
-        if job_id and _resume_images_already_sent(db, job_id):
+        try:
+            snapshot = capture_conversation_images(target_id)
+            fingerprints = resume_image_fingerprints(settings["paths"])
+        except Exception as exc:
+            console.print(f"[yellow]    ! 无法核验简历图片重复发送状态: {exc}[/yellow]")
+            return {"success": False, "reason": "resume_image_preflight_failed"}
+        if not snapshot["conversation_key"] or not job_id:
+            return {"success": False, "reason": "conversation_or_job_identity_unavailable"}
+        if not (Counter(fingerprints) - Counter(snapshot.get("fingerprints", []))):
+            return {"success": True, "skipped": True, "reason": "verified_resume_images_present"}
+        already_sent = _resume_images_already_sent(
+            db, snapshot["conversation_key"], fingerprints, snapshot["urls"]
+        )
+        if already_sent is None:
+            console.print("[yellow]    ! 无法读取简历图片发送记录，停止上传以避免重复发送[/yellow]")
+            return {"success": False, "reason": "resume_image_ledger_unavailable"}
+        if already_sent:
             console.print("[dim]    简历图片此前已发送，跳过重复上传[/dim]")
             return {"success": True, "skipped": True, "reason": "already_sent"}
+        if not _claim_resume_image_attempt(db, job_id, snapshot["conversation_key"], fingerprints):
+            return {"success": False, "reason": "resume_image_attempt_requires_manual_review"}
 
         result = attach_resume_images(
             target_id,
@@ -205,6 +239,7 @@ def _make_resume_image_attacher(config: dict, db, workbench_log=None):
             job=job,
             stop_event=stop_event,
             logger=workbench_log,
+            expected_conversation_key=snapshot["conversation_key"],
         )
         if result.get("success") and job_id:
             try:
@@ -212,7 +247,12 @@ def _make_resume_image_attacher(config: dict, db, workbench_log=None):
                     db,
                     job_id,
                     "resume_images",
-                    "、".join(Path(path).name for path in result.get("files", [])),
+                    json.dumps({
+                        "schema": "resume_images.v2",
+                        "conversation_key": result.get("conversation_key"),
+                        "file_fingerprints": result.get("file_fingerprints", []),
+                        "image_urls": result.get("image_urls", []),
+                    }, ensure_ascii=False),
                 )
             except Exception as exc:  # history is bookkeeping only
                 console.print(f"[yellow]    ! 简历图片发送成功但记录历史失败: {exc}[/yellow]")
@@ -221,18 +261,73 @@ def _make_resume_image_attacher(config: dict, db, workbench_log=None):
     return attach
 
 
-def _resume_images_already_sent(db, job_id: str) -> bool:
-    """Guard against re-uploading images when a send is retried or forced."""
-    if db is None or not job_id:
+def _resume_images_already_sent(
+    db, conversation_key: str, fingerprints: list[str], visible_urls: list[str]
+) -> bool | None:
+    """Match only a prior verified upload for this exact chat and file set."""
+    if db is None:
+        return None
+    if not conversation_key or not fingerprints or not visible_urls:
         return False
     try:
-        row = db.execute(
-            "SELECT 1 FROM history WHERE job_id = ? AND action = ? LIMIT 1",
-            (job_id, "resume_images"),
-        ).fetchone()
+        rows = db.execute(
+            "SELECT detail FROM history WHERE action = ? ORDER BY id DESC",
+            ("resume_images",),
+        ).fetchall()
     except Exception:
+        return None
+    visible = set(visible_urls)
+    for row in rows:
+        detail = row[0] if not isinstance(row, dict) else row.get("detail")
+        try:
+            receipt = json.loads(detail or "")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if (
+            isinstance(receipt, dict)
+            and
+            receipt.get("schema") == "resume_images.v2"
+            and receipt.get("conversation_key") == conversation_key
+            and receipt.get("file_fingerprints") == fingerprints
+            and receipt.get("image_urls")
+            and set(receipt["image_urls"]).issubset(visible)
+        ):
+            return True
+    return False
+
+
+def _claim_resume_image_attempt(db, job_id: str, conversation_key: str, fingerprints: list[str]) -> bool:
+    """Persist a fence before the file picker can auto-send, including across jobs."""
+    if db is None or db.in_transaction:
         return False
-    return bool(row)
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        rows = db.execute(
+            "SELECT job_id, detail FROM history WHERE action IN (?, ?)",
+            ("resume_images_attempt", "resume_images"),
+        ).fetchall()
+        for row in rows:
+            if str(row[0]) == job_id:
+                db.rollback()
+                return False
+            try:
+                receipt = json.loads(row[1] or "")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(receipt, dict) and receipt.get("conversation_key") == conversation_key:
+                db.rollback()
+                return False
+        db.execute(
+            "INSERT INTO history (job_id, action, detail) VALUES (?, ?, ?)",
+            (job_id, "resume_images_attempt", json.dumps({
+                "conversation_key": conversation_key, "file_fingerprints": fingerprints,
+            })),
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        return False
+    return True
 
 
 def _order_jobs_by_city_priority(jobs: list[dict], city_priority) -> list[dict]:
